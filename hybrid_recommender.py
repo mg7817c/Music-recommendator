@@ -99,10 +99,41 @@ def load_datasets():
     return playlist_data, audio_data
 
 
+def find_overlap(playlist_data, audio_data):
+    playlist_songs = set(playlist_data["song_id"].unique())
+    audio_songs = set(audio_data["song_id"].unique())
+
+    shared_songs = playlist_songs.intersection(audio_songs)
+    playlist_only = playlist_songs - shared_songs
+    audio_only = audio_songs - shared_songs
+
+    log("Unique playlist songs:", len(playlist_songs))
+    log("Unique audio songs:", len(audio_songs))
+    log("Shared songs:", len(shared_songs))
+
+    return shared_songs, playlist_only, audio_only
+
+
+def build_popularity_table(playlist_data):
+    popularity = (
+        playlist_data["song_id"]
+        .value_counts()
+        .reset_index()
+    )
+    popularity.columns = ["song_id", "count"]
+    return popularity
+
+
 def initialise_recommender():
     playlist_data, audio_data = load_datasets()
+    shared_songs, playlist_only, audio_only = find_overlap(playlist_data, audio_data)
+    popularity_df = build_popularity_table(playlist_data)
 
     return {
         "playlist_data": playlist_data,
-        "audio_data": audio_data
+        "audio_data": audio_data,
+        "shared_songs": shared_songs,
+        "playlist_only": playlist_only,
+        "audio_only": audio_only,
+        "popularity_df": popularity_df
     }
