@@ -1,10 +1,12 @@
 import pandas as pd
 import re
+from sklearn.metrics.pairwise import cosine_similarity
 
 # CONFIG
 PLAYLIST_PATH = "data/spotify_dataset.csv"
 AUDIO_PATH = "data/dataset.csv"
 
+CF_MAX_SONGS = 5000
 TOP_N = 10
 VERBOSE = False
 
@@ -124,10 +126,40 @@ def build_popularity_table(playlist_data):
     return popularity
 
 
+def build_cf_model(playlist_data):
+    top_songs = playlist_data["song_id"].value_counts().head(CF_MAX_SONGS).index
+    playlist_small = playlist_data[playlist_data["song_id"].isin(top_songs)].copy()
+
+    user_song_matrix = pd.crosstab(
+        playlist_small["user"],
+        playlist_small["song_id"]
+    )
+
+    cf_similarity = cosine_similarity(user_song_matrix.T)
+
+    cf_similarity_df = pd.DataFrame(
+        cf_similarity,
+        index=user_song_matrix.columns,
+        columns=user_song_matrix.columns
+    )
+
+    return cf_similarity_df
+
+
+def get_cf_recommendations(song_id, cf_similarity_df, n=10):
+    if song_id not in cf_similarity_df.index:
+        return pd.Series(dtype=float)
+
+    scores = cf_similarity_df[song_id].sort_values(ascending=False)
+    scores = scores.drop(labels=[song_id], errors="ignore")
+    return scores.head(n)
+
+
 def initialise_recommender():
     playlist_data, audio_data = load_datasets()
     shared_songs, playlist_only, audio_only = find_overlap(playlist_data, audio_data)
     popularity_df = build_popularity_table(playlist_data)
+    cf_similarity_df = build_cf_model(playlist_data)
 
     return {
         "playlist_data": playlist_data,
@@ -135,5 +167,6 @@ def initialise_recommender():
         "shared_songs": shared_songs,
         "playlist_only": playlist_only,
         "audio_only": audio_only,
-        "popularity_df": popularity_df
+        "popularity_df": popularity_df,
+        "cf_similarity_df": cf_similarity_df
     }
