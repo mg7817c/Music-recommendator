@@ -9,7 +9,11 @@ AUDIO_PATH = "data/dataset.csv"
 
 CF_MAX_SONGS = 5000
 CBF_MAX_SONGS = 5000
+
+ALPHA_CF = 0.6
+ALPHA_CBF = 0.4
 TOP_N = 10
+
 VERBOSE = False
 
 
@@ -118,16 +122,6 @@ def find_overlap(playlist_data, audio_data):
     return shared_songs, playlist_only, audio_only
 
 
-def build_popularity_table(playlist_data):
-    popularity = (
-        playlist_data["song_id"]
-        .value_counts()
-        .reset_index()
-    )
-    popularity.columns = ["song_id", "count"]
-    return popularity
-
-
 def build_cf_model(playlist_data):
     top_songs = playlist_data["song_id"].value_counts().head(CF_MAX_SONGS).index
     playlist_small = playlist_data[playlist_data["song_id"].isin(top_songs)].copy()
@@ -186,6 +180,16 @@ def build_cbf_model(audio_data):
     return cbf_similarity_df
 
 
+def build_popularity_table(playlist_data):
+    popularity = (
+        playlist_data["song_id"]
+        .value_counts()
+        .reset_index()
+    )
+    popularity.columns = ["song_id", "count"]
+    return popularity
+
+
 def get_cf_recommendations(song_id, cf_similarity_df, n=10):
     if song_id not in cf_similarity_df.index:
         return pd.Series(dtype=float)
@@ -204,12 +208,85 @@ def get_cbf_recommendations(song_id, cbf_similarity_df, n=10):
     return scores.head(n)
 
 
+def get_hybrid_recommendations(song_id, cf_similarity_df, cbf_similarity_df, n=10):
+    if song_id not in cf_similarity_df.index or song_id not in cbf_similarity_df.index:
+        return pd.Series(dtype=float)
+
+    cf_scores = cf_similarity_df[song_id]
+    cbf_scores = cbf_similarity_df[song_id]
+
+    common_index = cf_scores.index.intersection(cbf_scores.index)
+
+    hybrid_scores = (
+        ALPHA_CF * cf_scores.loc[common_index] +
+        ALPHA_CBF * cbf_scores.loc[common_index]
+    )
+
+    hybrid_scores = hybrid_scores.sort_values(ascending=False)
+    hybrid_scores = hybrid_scores.drop(labels=[song_id], errors="ignore")
+
+    return hybrid_scores.head(n)
+
+
+def get_popular_fallback(popularity_df, exclude_song_id=None, n=10):
+    df = popularity_df.copy()
+    if exclude_song_id is not None:
+        df = df[df["song_id"] != exclude_song_id]
+    return df.head(n)
+
+
+def recommend_from_song_id(
+    song_id,
+    shared_songs,
+    playlist_only,
+    audio_only,
+    cf_similarity_df,
+    cbf_similarity_df,
+    popularity_df,
+    n=10
+):
+    in_shared = song_id in shared_songs
+    in_cf = song_id in cf_similarity_df.index
+    in_cbf = song_id in cbf_similarity_df.index
+
+    print("\nSelected song:", song_id)
+    print("In shared_songs:", in_shared)
+    print("In CF model:", in_cf)
+    print("In CBF model:", in_cbf)
+
+    if in_cf and in_cbf:
+        recs = get_hybrid_recommendations(song_id, cf_similarity_df, cbf_similarity_df, n=n)
+        if len(recs) == 0:
+            fallback = get_popular_fallback(popularity_df, exclude_song_id=song_id, n=n)
+            return "POPULARITY FALLBACK", list(fallback["song_id"])
+        return "HYBRID", list(recs.index)
+
+    elif in_cf:
+        recs = get_cf_recommendations(song_id, cf_similarity_df, n=n)
+        if len(recs) == 0:
+            fallback = get_popular_fallback(popularity_df, exclude_song_id=song_id, n=n)
+            return "POPULARITY FALLBACK", list(fallback["song_id"])
+        return "COLLABORATIVE FILTERING", list(recs.index)
+
+    elif in_cbf:
+        recs = get_cbf_recommendations(song_id, cbf_similarity_df, n=n)
+        if len(recs) == 0:
+            fallback = get_popular_fallback(popularity_df, exclude_song_id=song_id, n=n)
+            return "POPULARITY FALLBACK", list(fallback["song_id"])
+        return "CONTENT-BASED FILTERING", list(recs.index)
+
+    else:
+        fallback = get_popular_fallback(popularity_df, exclude_song_id=song_id, n=n)
+        return "POPULARITY FALLBACK", list(fallback["song_id"])
+
+
 def initialise_recommender():
     playlist_data, audio_data = load_datasets()
     shared_songs, playlist_only, audio_only = find_overlap(playlist_data, audio_data)
-    popularity_df = build_popularity_table(playlist_data)
+
     cf_similarity_df = build_cf_model(playlist_data)
     cbf_similarity_df = build_cbf_model(audio_data)
+    popularity_df = build_popularity_table(playlist_data)
 
     return {
         "playlist_data": playlist_data,
@@ -217,7 +294,7 @@ def initialise_recommender():
         "shared_songs": shared_songs,
         "playlist_only": playlist_only,
         "audio_only": audio_only,
-        "popularity_df": popularity_df,
         "cf_similarity_df": cf_similarity_df,
-        "cbf_similarity_df": cbf_similarity_df
+        "cbf_similarity_df": cbf_similarity_df,
+        "popularity_df": popularity_df
     }
