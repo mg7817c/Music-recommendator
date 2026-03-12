@@ -29,9 +29,11 @@ def clean_text(text):
     text = str(text).lower().strip()
     text = text.replace("[", "").replace("]", "").replace("'", "").replace('"', "")
 
+    # remove text in brackets
     text = re.sub(r"\(.*?\)", "", text)
     text = re.sub(r"\[.*?\]", "", text)
 
+    # remove feat/ft text
     text = re.sub(r"\bfeat\b.*", "", text)
     text = re.sub(r"\bft\b.*", "", text)
     text = re.sub(r"\bfeaturing\b.*", "", text)
@@ -190,6 +192,58 @@ def build_popularity_table(playlist_data):
     return popularity
 
 
+def build_song_catalog(cf_similarity_df, cbf_similarity_df):
+    cf_index = set(cf_similarity_df.index)
+    cbf_index = set(cbf_similarity_df.index)
+
+    all_song_ids = sorted(cf_index.union(cbf_index))
+
+    rows = []
+    for song_id in all_song_ids:
+        in_cf = song_id in cf_index
+        in_cbf = song_id in cbf_index
+
+        if in_cf and in_cbf:
+            mode = "HYBRID"
+        elif in_cf:
+            mode = "CF"
+        else:
+            mode = "CBF"
+
+        parts = song_id.split(" - ", 1)
+        if len(parts) == 2:
+            artist_display, track_display = parts
+        else:
+            artist_display, track_display = song_id, ""
+
+        display = f"{artist_display.title()} - {track_display.title()}"
+
+        rows.append({
+            "song_id": song_id,
+            "artist_display": artist_display,
+            "track_display": track_display,
+            "display": display,
+            "mode": mode
+        })
+
+    catalog = pd.DataFrame(rows)
+    return catalog.sort_values("display").reset_index(drop=True)
+
+
+def search_songs(catalog, query, limit=50):
+    query = clean_text(query)
+
+    if not query:
+        return catalog.head(limit)
+
+    mask = (
+        catalog["song_id"].str.contains(query, case=False, na=False) |
+        catalog["display"].str.contains(query, case=False, na=False)
+    )
+
+    return catalog[mask].head(limit)
+
+
 def get_cf_recommendations(song_id, cf_similarity_df, n=10):
     if song_id not in cf_similarity_df.index:
         return pd.Series(dtype=float)
@@ -288,6 +342,8 @@ def initialise_recommender():
     cbf_similarity_df = build_cbf_model(audio_data)
     popularity_df = build_popularity_table(playlist_data)
 
+    catalog = build_song_catalog(cf_similarity_df, cbf_similarity_df)
+
     return {
         "playlist_data": playlist_data,
         "audio_data": audio_data,
@@ -296,5 +352,6 @@ def initialise_recommender():
         "audio_only": audio_only,
         "cf_similarity_df": cf_similarity_df,
         "cbf_similarity_df": cbf_similarity_df,
-        "popularity_df": popularity_df
+        "popularity_df": popularity_df,
+        "catalog": catalog
     }
