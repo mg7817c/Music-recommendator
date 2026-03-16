@@ -7,8 +7,9 @@ from sklearn.preprocessing import StandardScaler
 PLAYLIST_PATH = "data/spotify_dataset.csv"
 AUDIO_PATH = "data/dataset.csv"
 
-CF_MAX_SONGS = 5000
-CBF_MAX_SONGS = 5000
+# increased from 5000 - was causing most test seeds to fall outside the model
+CF_MAX_SONGS = 25000
+CBF_MAX_SONGS = 25000
 
 ALPHA_CF = 0.6
 ALPHA_CBF = 0.4
@@ -38,6 +39,14 @@ def clean_text(text):
     text = re.sub(r"\bft\b.*", "", text)
     text = re.sub(r"\bfeaturing\b.*", "", text)
 
+    noisy_words = [
+        "remastered", "remaster", "live", "edit", "radio edit",
+        "version", "mono", "stereo", "deluxe", "explicit",
+        "clean", "bonus track"
+    ]
+    for word in noisy_words:
+        text = text.replace(word, "")
+
     text = re.sub(r"[^a-z0-9\s]", "", text)
     text = re.sub(r"\s+", " ", text).strip()
 
@@ -45,17 +54,8 @@ def clean_text(text):
 
 
 def load_datasets():
-    playlist_data = pd.read_csv(
-        PLAYLIST_PATH,
-        engine="python",
-        on_bad_lines="skip"
-    )
-
-    audio_data = pd.read_csv(
-        AUDIO_PATH,
-        engine="python",
-        on_bad_lines="skip"
-    )
+    playlist_data = pd.read_csv(PLAYLIST_PATH, engine="python", on_bad_lines="skip")
+    audio_data    = pd.read_csv(AUDIO_PATH,    engine="python", on_bad_lines="skip")
 
     playlist_data.columns = (
         playlist_data.columns
@@ -63,7 +63,6 @@ def load_datasets():
         .str.strip()
         .str.lower()
     )
-
     audio_data.columns = (
         audio_data.columns
         .str.replace('"', "", regex=False)
@@ -77,26 +76,33 @@ def load_datasets():
         "trackname": "track",
         "playlistname": "playlist"
     })
-
     audio_data = audio_data.rename(columns={
         "artists": "artist",
         "track_name": "track"
     })
 
-    playlist_data["artist_clean"] = playlist_data["artist"].apply(clean_text)
-    playlist_data["track_clean"] = playlist_data["track"].apply(clean_text)
+    required_playlist_cols = ["user", "artist", "track"]
+    required_audio_cols = ["artist", "track"]
 
-    audio_data["artist_clean"] = audio_data["artist"].apply(clean_text)
-    audio_data["track_clean"] = audio_data["track"].apply(clean_text)
+    for col in required_playlist_cols:
+        if col not in playlist_data.columns:
+            raise KeyError(f"Missing required column in playlist dataset: {col}")
+    for col in required_audio_cols:
+        if col not in audio_data.columns:
+            raise KeyError(f"Missing required column in audio dataset: {col}")
+
+    playlist_data["artist_clean"] = playlist_data["artist"].apply(clean_text)
+    playlist_data["track_clean"]  = playlist_data["track"].apply(clean_text)
+    audio_data["artist_clean"]    = audio_data["artist"].apply(clean_text)
+    audio_data["track_clean"]     = audio_data["track"].apply(clean_text)
 
     playlist_data = playlist_data[
         (playlist_data["artist_clean"] != "") &
-        (playlist_data["track_clean"] != "")
+        (playlist_data["track_clean"]  != "")
     ].copy()
-
     audio_data = audio_data[
         (audio_data["artist_clean"] != "") &
-        (audio_data["track_clean"] != "")
+        (audio_data["track_clean"]  != "")
     ].copy()
 
     playlist_data["song_id"] = (
@@ -106,26 +112,30 @@ def load_datasets():
         audio_data["artist_clean"] + " - " + audio_data["track_clean"]
     )
 
+    log("Playlist rows:", len(playlist_data))
+    log("Audio rows:",    len(audio_data))
+
     return playlist_data, audio_data
 
 
 def find_overlap(playlist_data, audio_data):
     playlist_songs = set(playlist_data["song_id"].unique())
-    audio_songs = set(audio_data["song_id"].unique())
+    audio_songs    = set(audio_data["song_id"].unique())
 
-    shared_songs = playlist_songs.intersection(audio_songs)
+    shared_songs  = playlist_songs.intersection(audio_songs)
     playlist_only = playlist_songs - shared_songs
-    audio_only = audio_songs - shared_songs
+    audio_only    = audio_songs    - shared_songs
 
     log("Unique playlist songs:", len(playlist_songs))
-    log("Unique audio songs:", len(audio_songs))
-    log("Shared songs:", len(shared_songs))
+    log("Unique audio songs:",    len(audio_songs))
+    log("Shared songs:",          len(shared_songs))
 
     return shared_songs, playlist_only, audio_only
 
 
 def build_cf_model(playlist_data):
-    top_songs = playlist_data["song_id"].value_counts().head(CF_MAX_SONGS).index
+    # keep most common songs for speed
+    top_songs      = playlist_data["song_id"].value_counts().head(CF_MAX_SONGS).index
     playlist_small = playlist_data[playlist_data["song_id"].isin(top_songs)].copy()
 
     user_song_matrix = pd.crosstab(
@@ -134,7 +144,6 @@ def build_cf_model(playlist_data):
     )
 
     cf_similarity = cosine_similarity(user_song_matrix.T)
-
     cf_similarity_df = pd.DataFrame(
         cf_similarity,
         index=user_song_matrix.columns,
@@ -148,31 +157,26 @@ def build_cbf_model(audio_data):
     song_features = audio_data.drop_duplicates(subset=["song_id"]).copy()
 
     feature_cols = [
-        "acousticness",
-        "danceability",
-        "energy",
-        "instrumentalness",
-        "liveness",
-        "loudness",
-        "speechiness",
-        "tempo",
-        "valence"
+        "acousticness", "danceability", "energy", "instrumentalness",
+        "liveness", "loudness", "speechiness", "tempo", "valence"
     ]
 
     missing_cols = [col for col in feature_cols if col not in song_features.columns]
     if missing_cols:
         raise KeyError(f"Missing audio feature columns in audio dataset: {missing_cols}")
 
+    if "popularity" in song_features.columns:
+        song_features = song_features.sort_values("popularity", ascending=False)
+
     song_features = song_features.head(CBF_MAX_SONGS).copy()
 
-    X = song_features[feature_cols].dropna().copy()
+    X             = song_features[feature_cols].dropna().copy()
     song_features = song_features.loc[X.index].copy()
 
-    scaler = StandardScaler()
+    scaler   = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    cbf_similarity = cosine_similarity(X_scaled)
-
+    cbf_similarity    = cosine_similarity(X_scaled)
     cbf_similarity_df = pd.DataFrame(
         cbf_similarity,
         index=song_features["song_id"],
@@ -193,14 +197,14 @@ def build_popularity_table(playlist_data):
 
 
 def build_song_catalog(cf_similarity_df, cbf_similarity_df):
-    cf_index = set(cf_similarity_df.index)
+    cf_index  = set(cf_similarity_df.index)
     cbf_index = set(cbf_similarity_df.index)
 
     all_song_ids = sorted(cf_index.union(cbf_index))
 
     rows = []
     for song_id in all_song_ids:
-        in_cf = song_id in cf_index
+        in_cf  = song_id in cf_index
         in_cbf = song_id in cbf_index
 
         if in_cf and in_cbf:
@@ -219,11 +223,11 @@ def build_song_catalog(cf_similarity_df, cbf_similarity_df):
         display = f"{artist_display.title()} - {track_display.title()}"
 
         rows.append({
-            "song_id": song_id,
+            "song_id":        song_id,
             "artist_display": artist_display,
-            "track_display": track_display,
-            "display": display,
-            "mode": mode
+            "track_display":  track_display,
+            "display":        display,
+            "mode":           mode
         })
 
     catalog = pd.DataFrame(rows)
@@ -232,22 +236,18 @@ def build_song_catalog(cf_similarity_df, cbf_similarity_df):
 
 def search_songs(catalog, query, limit=50):
     query = clean_text(query)
-
     if not query:
         return catalog.head(limit)
-
     mask = (
         catalog["song_id"].str.contains(query, case=False, na=False) |
         catalog["display"].str.contains(query, case=False, na=False)
     )
-
     return catalog[mask].head(limit)
 
 
 def get_cf_recommendations(song_id, cf_similarity_df, n=10):
     if song_id not in cf_similarity_df.index:
         return pd.Series(dtype=float)
-
     scores = cf_similarity_df[song_id].sort_values(ascending=False)
     scores = scores.drop(labels=[song_id], errors="ignore")
     return scores.head(n)
@@ -256,7 +256,6 @@ def get_cf_recommendations(song_id, cf_similarity_df, n=10):
 def get_cbf_recommendations(song_id, cbf_similarity_df, n=10):
     if song_id not in cbf_similarity_df.index:
         return pd.Series(dtype=float)
-
     scores = cbf_similarity_df[song_id].sort_values(ascending=False)
     scores = scores.drop(labels=[song_id], errors="ignore")
     return scores.head(n)
@@ -266,13 +265,13 @@ def get_hybrid_recommendations(song_id, cf_similarity_df, cbf_similarity_df, n=1
     if song_id not in cf_similarity_df.index or song_id not in cbf_similarity_df.index:
         return pd.Series(dtype=float)
 
-    cf_scores = cf_similarity_df[song_id]
+    cf_scores  = cf_similarity_df[song_id]
     cbf_scores = cbf_similarity_df[song_id]
 
     common_index = cf_scores.index.intersection(cbf_scores.index)
 
     hybrid_scores = (
-        ALPHA_CF * cf_scores.loc[common_index] +
+        ALPHA_CF  * cf_scores.loc[common_index] +
         ALPHA_CBF * cbf_scores.loc[common_index]
     )
 
@@ -299,14 +298,11 @@ def recommend_from_song_id(
     popularity_df,
     n=10
 ):
-    in_shared = song_id in shared_songs
-    in_cf = song_id in cf_similarity_df.index
+    in_cf  = song_id in cf_similarity_df.index
     in_cbf = song_id in cbf_similarity_df.index
 
-    print("\nSelected song:", song_id)
-    print("In shared_songs:", in_shared)
-    print("In CF model:", in_cf)
-    print("In CBF model:", in_cbf)
+    log(f"\nSelected: {song_id}")
+    log(f"In CF: {in_cf} | In CBF: {in_cbf}")
 
     if in_cf and in_cbf:
         recs = get_hybrid_recommendations(song_id, cf_similarity_df, cbf_similarity_df, n=n)
@@ -338,20 +334,19 @@ def initialise_recommender():
     playlist_data, audio_data = load_datasets()
     shared_songs, playlist_only, audio_only = find_overlap(playlist_data, audio_data)
 
-    cf_similarity_df = build_cf_model(playlist_data)
+    cf_similarity_df  = build_cf_model(playlist_data)
     cbf_similarity_df = build_cbf_model(audio_data)
-    popularity_df = build_popularity_table(playlist_data)
-
-    catalog = build_song_catalog(cf_similarity_df, cbf_similarity_df)
+    popularity_df     = build_popularity_table(playlist_data)
+    catalog           = build_song_catalog(cf_similarity_df, cbf_similarity_df)
 
     return {
-        "playlist_data": playlist_data,
-        "audio_data": audio_data,
-        "shared_songs": shared_songs,
-        "playlist_only": playlist_only,
-        "audio_only": audio_only,
-        "cf_similarity_df": cf_similarity_df,
+        "playlist_data":     playlist_data,
+        "audio_data":        audio_data,
+        "shared_songs":      shared_songs,
+        "playlist_only":     playlist_only,
+        "audio_only":        audio_only,
+        "cf_similarity_df":  cf_similarity_df,
         "cbf_similarity_df": cbf_similarity_df,
-        "popularity_df": popularity_df,
-        "catalog": catalog
+        "popularity_df":     popularity_df,
+        "catalog":           catalog
     }
