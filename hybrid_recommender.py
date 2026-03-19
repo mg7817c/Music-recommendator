@@ -154,19 +154,34 @@ def build_cf_model(playlist_data):
 
 
 def build_cbf_model(audio_data):
-    song_features = audio_data.drop_duplicates(subset=["song_id"]).copy()
-
     feature_cols = [
         "acousticness", "danceability", "energy", "instrumentalness",
         "liveness", "loudness", "speechiness", "tempo", "valence"
     ]
 
-    missing_cols = [col for col in feature_cols if col not in song_features.columns]
+    missing_cols = [col for col in feature_cols if col not in audio_data.columns]
     if missing_cols:
         raise KeyError(f"Missing audio feature columns in audio dataset: {missing_cols}")
 
-    if "popularity" in song_features.columns:
-        song_features = song_features.sort_values("popularity", ascending=False)
+    # some songs appear in multiple rows with different genres
+    # averaging gives a more representative feature vector than just keeping one row
+    song_features = (
+        audio_data
+        .groupby("song_id")[feature_cols]
+        .mean()
+        .reset_index()
+    )
+
+    if "popularity" in audio_data.columns:
+        popularity_mean = (
+            audio_data
+            .groupby("song_id")["popularity"]
+            .mean()
+            .reset_index()
+            .rename(columns={"popularity": "popularity_mean"})
+        )
+        song_features = song_features.merge(popularity_mean, on="song_id", how="left")
+        song_features = song_features.sort_values("popularity_mean", ascending=False)
 
     song_features = song_features.head(CBF_MAX_SONGS).copy()
 
