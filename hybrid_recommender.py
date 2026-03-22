@@ -260,6 +260,16 @@ def search_songs(catalog, query, limit=50):
     return catalog[mask].head(limit)
 
 
+def _normalise(scores):
+    # min-max normalise to [0,1] before combining scores
+    # without this, whichever model has higher raw values dominates
+    min_val = scores.min()
+    max_val = scores.max()
+    if max_val - min_val < 1e-9:
+        return scores * 0.0
+    return (scores - min_val) / (max_val - min_val)
+
+
 def get_cf_recommendations(song_id, cf_similarity_df, n=10):
     if song_id not in cf_similarity_df.index:
         return pd.Series(dtype=float)
@@ -285,10 +295,14 @@ def get_hybrid_recommendations(song_id, cf_similarity_df, cbf_similarity_df, n=1
 
     common_index = cf_scores.index.intersection(cbf_scores.index)
 
-    hybrid_scores = (
-        ALPHA_CF  * cf_scores.loc[common_index] +
-        ALPHA_CBF * cbf_scores.loc[common_index]
-    )
+    if len(common_index) < n:
+        log("Common index too small, falling back to CF")
+        return pd.Series(dtype=float)
+
+    cf_norm  = _normalise(cf_scores.loc[common_index])
+    cbf_norm = _normalise(cbf_scores.loc[common_index])
+
+    hybrid_scores = ALPHA_CF * cf_norm + ALPHA_CBF * cbf_norm
 
     hybrid_scores = hybrid_scores.sort_values(ascending=False)
     hybrid_scores = hybrid_scores.drop(labels=[song_id], errors="ignore")
