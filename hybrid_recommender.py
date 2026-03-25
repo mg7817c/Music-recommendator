@@ -201,13 +201,39 @@ def build_cbf_model(audio_data):
     return cbf_similarity_df
 
 
-def build_popularity_table(playlist_data):
+def build_popularity_table(playlist_data, audio_data=None):
     popularity = (
         playlist_data["song_id"]
         .value_counts()
         .reset_index()
     )
     popularity.columns = ["song_id", "count"]
+
+    # combine playlist frequency with Spotify popularity score
+    # so songs only in the audio dataset can still appear in the fallback
+    if audio_data is not None and "popularity" in audio_data.columns:
+        audio_pop = (
+            audio_data
+            .groupby("song_id")["popularity"]
+            .mean()
+            .reset_index()
+            .rename(columns={"popularity": "audio_popularity"})
+        )
+        popularity = popularity.merge(audio_pop, on="song_id", how="outer")
+        popularity["count"]            = popularity["count"].fillna(0)
+        popularity["audio_popularity"] = popularity["audio_popularity"].fillna(0)
+
+        max_count = popularity["count"].max()            or 1
+        max_audio = popularity["audio_popularity"].max() or 1
+
+        popularity["score"] = (
+            0.5 * popularity["count"]            / max_count +
+            0.5 * popularity["audio_popularity"] / max_audio
+        )
+        popularity = popularity.sort_values("score", ascending=False).reset_index(drop=True)
+    else:
+        popularity = popularity.sort_values("count", ascending=False).reset_index(drop=True)
+
     return popularity
 
 
@@ -365,7 +391,7 @@ def initialise_recommender():
 
     cf_similarity_df  = build_cf_model(playlist_data)
     cbf_similarity_df = build_cbf_model(audio_data)
-    popularity_df     = build_popularity_table(playlist_data)
+    popularity_df     = build_popularity_table(playlist_data, audio_data)
     catalog           = build_song_catalog(cf_similarity_df, cbf_similarity_df)
 
     return {
