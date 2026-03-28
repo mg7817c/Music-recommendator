@@ -385,6 +385,57 @@ def recommend_from_song_id(
         return "POPULARITY FALLBACK", list(fallback["song_id"])
 
 
+def recommend_from_playlist(
+    song_ids,
+    cf_similarity_df,
+    cbf_similarity_df,
+    popularity_df,
+    n=10,
+):
+    # averages similarity vectors across all seed songs
+    # so recommendations reflect the whole playlist not just one track
+    cf_scores_list  = []
+    cbf_scores_list = []
+
+    for song_id in song_ids:
+        if song_id in cf_similarity_df.index:
+            cf_scores_list.append(cf_similarity_df[song_id])
+        if song_id in cbf_similarity_df.index:
+            cbf_scores_list.append(cbf_similarity_df[song_id])
+
+    if cf_scores_list and cbf_scores_list:
+        cf_avg  = pd.concat(cf_scores_list,  axis=1).mean(axis=1)
+        cbf_avg = pd.concat(cbf_scores_list, axis=1).mean(axis=1)
+        common  = cf_avg.index.union(cbf_avg.index)
+        scores  = (
+            ALPHA_CF  * cf_avg.reindex(common, fill_value=0) +
+            ALPHA_CBF * cbf_avg.reindex(common, fill_value=0)
+        )
+        mode = "HYBRID"
+
+    elif cf_scores_list:
+        scores = pd.concat(cf_scores_list, axis=1).mean(axis=1)
+        mode   = "COLLABORATIVE FILTERING"
+
+    elif cbf_scores_list:
+        scores = pd.concat(cbf_scores_list, axis=1).mean(axis=1)
+        mode   = "CONTENT-BASED FILTERING"
+
+    else:
+        fallback = get_popular_fallback(popularity_df, n=n)
+        return "POPULARITY FALLBACK", list(fallback["song_id"])
+
+    # remove seed songs from results
+    scores = scores.drop(labels=list(song_ids), errors="ignore")
+    recs   = list(scores.sort_values(ascending=False).head(n).index)
+
+    if not recs:
+        fallback = get_popular_fallback(popularity_df, n=n)
+        return "POPULARITY FALLBACK", list(fallback["song_id"])
+
+    return mode, recs
+
+
 def initialise_recommender():
     playlist_data, audio_data = load_datasets()
     shared_songs, playlist_only, audio_only = find_overlap(playlist_data, audio_data)
