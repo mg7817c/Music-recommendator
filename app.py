@@ -284,10 +284,31 @@ def get_audio_features(song_id):
     return vals
 
 
-def feature_comparison_chart(seed_id, rec_id):
-    # radar chart showing audio profile of seed vs recommended song
-    seed_vals = get_audio_features(seed_id)
-    rec_vals  = get_audio_features(rec_id)
+def get_playlist_centroid(song_ids):
+    """Returns averaged audio features across all songs in the playlist.
+    Used to power the radar chart in playlist mode so it reflects the
+    combined profile rather than a single seed song.
+    """
+    audio     = state["audio_data"]
+    available = [c for c in FEATURE_LABELS if c in audio.columns]
+    rows      = audio[audio["song_id"].isin(song_ids)]
+    if rows.empty:
+        return None
+    centroid = rows.groupby("song_id")[available].mean().mean()
+    return centroid
+
+
+def feature_comparison_chart(seed_id_or_series, rec_id):
+    """Radar chart comparing audio profile of seed vs recommended song.
+    seed_id_or_series can be either a song_id string (single-song mode)
+    or a pre-computed pandas Series of averaged features (playlist mode).
+    """
+    if isinstance(seed_id_or_series, pd.Series):
+        seed_vals = seed_id_or_series
+    else:
+        seed_vals = get_audio_features(seed_id_or_series)
+
+    rec_vals = get_audio_features(rec_id)
     if seed_vals is None or rec_vals is None:
         return None
 
@@ -298,11 +319,10 @@ def feature_comparison_chart(seed_id, rec_id):
     rec_values  = rec_vals.reindex(features, fill_value=0).tolist() + [rec_vals.reindex(features, fill_value=0).iloc[0]]
     labels_closed = labels + [labels[0]]
 
-    # Use theme colours
-    is_dark      = st.session_state.dark_mode
-    bg_colour    = T["card"]
-    grid_colour  = T["border"]
-    tick_colour  = T["muted"]
+    is_dark       = st.session_state.dark_mode
+    bg_colour     = T["card"]
+    grid_colour   = T["border"]
+    tick_colour   = T["muted"]
     legend_colour = T["text"]
 
     fig = go.Figure()
@@ -491,7 +511,8 @@ def get_energy_label(song_id):
         return "Low energy"
 
 
-def recommendation_card(i, song_id, seed_id, mode, prefix="single", total=5):
+def recommendation_card(i, song_id, seed_id, mode, prefix="single", total=5,
+                        playlist_centroid=None):
     row     = catalog[catalog["song_id"] == song_id]
     display = row["display"].values[0] if not row.empty else song_id.title()
 
@@ -503,12 +524,10 @@ def recommendation_card(i, song_id, seed_id, mode, prefix="single", total=5):
 
     col1, col2   = get_blob_colour(song_id)
     energy_label = get_energy_label(song_id)
-    sim_pct      = get_similarity_pct(seed_id, song_id, mode)
-    rec_feats    = get_audio_features(song_id)
 
-    # Spotify search link
-    spotify_query   = (artist_raw + " " + track_raw).replace(" ", "%20")
-    spotify_url     = f"https://open.spotify.com/search/{spotify_query}"
+    # only compute similarity meter when we have a single seed song
+    sim_pct  = get_similarity_pct(seed_id, song_id, mode) if seed_id else None
+    rec_feats = get_audio_features(song_id)
 
     # Mode badge — shows which model recommended this song (accessibility + transparency)
     mode_colours = {
@@ -572,7 +591,8 @@ def recommendation_card(i, song_id, seed_id, mode, prefix="single", total=5):
                     f'<div style="height:100%;width:{pct}%;background:{colour};border-radius:2px;"></div>'
                     f'</div></div>'
                 )
-    else:
+    elif seed_id:
+        # only show CF listening connection bar in single-song mode
         cf_sim_df = state["cf_similarity_df"]
         if seed_id in cf_sim_df.index and song_id in cf_sim_df.index:
             sim      = float(cf_sim_df.loc[seed_id, song_id])
@@ -597,7 +617,7 @@ def recommendation_card(i, song_id, seed_id, mode, prefix="single", total=5):
                 f'</div>'
             )
 
-    # Similarity meter
+    # Similarity meter (single-song mode only)
     sim_html = ""
     if sim_pct is not None:
         circ   = 113
@@ -656,21 +676,47 @@ def recommendation_card(i, song_id, seed_id, mode, prefix="single", total=5):
 
     with col_exp:
         with st.expander("Why was this recommended?"):
-            explanation = build_explanation(seed_id, song_id, mode)
-            st.markdown(
-                f'<div style="font-size:13px;color:{T["text"]};line-height:1.6;'
-                f'padding:4px 0 8px 0;">{explanation}</div>',
-                unsafe_allow_html=True,
-            )
-            fig = feature_comparison_chart(seed_id, song_id)
-            if fig:
+            if playlist_centroid is not None:
+                # Playlist mode: explain against the averaged playlist profile
                 st.markdown(
-                    f'<div style="font-size:11px;color:{T["muted"]};'
-                    f'margin-bottom:4px;">Full audio profile comparison</div>',
+                    f'<div style="font-size:13px;color:{T["muted"]};line-height:1.6;'
+                    f'padding:4px 0 8px 0;">Recommended based on the combined audio '
+                    f'profile and listening patterns of your whole playlist.</div>',
                     unsafe_allow_html=True,
                 )
-                st.plotly_chart(fig, use_container_width=True,
-                                config={"displayModeBar": False})
+                fig = feature_comparison_chart(playlist_centroid, song_id)
+                if fig:
+                    st.markdown(
+                        f'<div style="font-size:11px;color:{T["muted"]};'
+                        f'margin-bottom:4px;">Audio profile: playlist average vs '
+                        f'this recommendation</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.plotly_chart(fig, use_container_width=True,
+                                    config={"displayModeBar": False})
+            elif seed_id:
+                # Single-song mode: full explanation + radar chart
+                explanation = build_explanation(seed_id, song_id, mode)
+                st.markdown(
+                    f'<div style="font-size:13px;color:{T["text"]};line-height:1.6;'
+                    f'padding:4px 0 8px 0;">{explanation}</div>',
+                    unsafe_allow_html=True,
+                )
+                fig = feature_comparison_chart(seed_id, song_id)
+                if fig:
+                    st.markdown(
+                        f'<div style="font-size:11px;color:{T["muted"]};'
+                        f'margin-bottom:4px;">Full audio profile comparison</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.plotly_chart(fig, use_container_width=True,
+                                    config={"displayModeBar": False})
+            else:
+                st.markdown(
+                    f'<div style="font-size:13px;color:{T["muted"]};">'
+                    f'Recommended based on your selection.</div>',
+                    unsafe_allow_html=True,
+                )
 
     with col_dismiss:
         if st.button("✕ Hide", key=f"{prefix}_dismiss_{song_id}_{i}",
@@ -714,6 +760,8 @@ with tab_single:
 
     with col_left:
         st.subheader("Search")
+        # Search uses Streamlit's built-in selectbox filtering over the pre-loaded catalog.
+        # search_songs() in hybrid_recommender.py exists as a utility but is not called at query time.
         selected_option = st.selectbox(
             "Search", options=catalog["display"].tolist(), index=None,
             placeholder="Type an artist or song title...",
@@ -976,16 +1024,19 @@ with tab_playlist:
                     " — based on your full playlist"
                 )
 
-            seed_id = (st.session_state.playlist[0]["song_id"]
-                       if st.session_state.playlist else None)
+            # compute averaged audio profile across all playlist songs
+            # so radar charts reflect the whole playlist, not just the first song
+            playlist_song_ids = [s["song_id"] for s in st.session_state.playlist]
+            centroid = get_playlist_centroid(playlist_song_ids) if playlist_song_ids else None
 
             for i, song_id in enumerate(st.session_state.playlist_recs):
                 recommendation_card(
                     i=i, song_id=song_id,
-                    seed_id=seed_id,
+                    seed_id=None,
                     mode=st.session_state.playlist_mode,
                     prefix="playlist",
                     total=len(st.session_state.playlist_recs),
+                    playlist_centroid=centroid,
                 )
 
         elif st.session_state.playlist_mode:
