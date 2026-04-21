@@ -3,9 +3,7 @@
 *COMP1682 Final Year Individual Project*
 Manuela Geshtenja — University of Greenwich, April 2026
 
-A lightweight hybrid music recommendation system combining Collaborative Filtering (CF)
-and Content-Based Filtering (CBF) using a weighted hybrid approach with fallback
-switching, implemented with a Streamlit web interface.
+A lightweight hybrid music recommendation system combining Collaborative Filtering (CF) and Content-Based Filtering (CBF) through a switching hybrid strategy, implemented with a Streamlit web interface.
 
 ---
 
