@@ -86,8 +86,7 @@ Two publicly available Kaggle datasets are required. Place both files inside the
 
 ## How It Works
 
-The system uses a **weighted hybrid** as its primary method, with **fallback switching**
-when one model lacks coverage for a given song:
+The system uses a switching hybrid strategy, applying a weighted hybrid score when both models have coverage, and falling back to CF-only, CBF-only, or popularity-based recommendations otherwise.
 
 | Mode | Condition | Method |
 |---|---|---|
